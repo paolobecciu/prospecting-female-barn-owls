@@ -1,0 +1,1489 @@
+
+# INFO ####
+# Script to reproduce models presented in "Becciu P, Sechaud R, Schalcher K, Plancherel C & Roulin A (2022)
+##  Movement data link phenotypic traits to individual fitness in a nocturnal predator. bioRxiv. DOI: https://doi.org/10.1101/2022.08.26.505323"
+
+## the sets of models reflect the order presented in the manuscripts, titles refer to sections in the Results
+#______________________________________________________________________####
+
+
+# libraries ####
+packages<-function(x){
+  x<-as.character(match.call()[[2]])
+  if (!require(x,character.only=TRUE)){
+    install.packages(pkgs=x,repos="http://cran.r-project.org")
+    require(x,character.only=TRUE)
+  }
+}
+packages(tidyverse)
+packages(tidylog)
+packages(glmmTMB)
+packages(sjPlot)
+packages(sjstats)
+packages(data.table)
+packages(ggplot2)
+packages(performance)
+packages(car)
+packages(MuMIn)
+packages(DHARMa)
+packages(AICcmodavg)
+packages(ggcorrplot)
+
+options(na.action = "na.fail")
+
+# set directory ####
+mypath <- "/Users/.../.../" # path to your working directory
+
+
+#____________________________________________####
+# Factors associated with prospecting behaviour ####
+#____________________________________________####
+
+# load data ####
+
+general.tab <- fread(paste0(mypath,"BecciuEtAl2023_table_for_analysis_general_tab.csv"))
+
+
+# subset for male- female- brood-related sets of averaged models ####
+
+## subset for male-related averaged models ####
+z_dataM1 <- general.tab %>% 
+  filter(track.period > 2) %>%
+  mutate(expl01 = as.integer(ifelse(n.box2 == 0, 0, 1))) %>% 
+  dplyr::select(Data_Directory, FemaleRing, MaleRing1, Season, track.period, SiteID,  
+                n.box2, avg.rev.night, avg.time, med.time, expl01,
+                prop.perching, prop.hunting, prop.commuting,
+                ColourM1.new,
+                Spots.nM1.new, 
+                AgeBin_male,
+                HR95_Sizekm2_male,
+                Provisioning_rate_male,
+                BodyCondition_resid_male
+  ) %>% 
+  mutate(logHR95_Sizekm2_male = log(HR95_Sizekm2_male),
+         Season = as.factor(Season),
+         AgeBin_male = as.factor(AgeBin_male)) %>%
+  mutate_at(c(
+    'ColourM1.new',
+    'Spots.nM1.new',
+    "prop.perching",
+    "prop.hunting",
+    "prop.commuting",
+    "BodyCondition_resid_male",
+    "HR95_Sizekm2_male", 
+    "logHR95_Sizekm2_male", 
+    "Provisioning_rate_male"),
+    list(z = ~scale(.))) %>%
+  na.omit() %>%
+  as.data.frame() 
+
+## subset for female-related averaged models ####
+
+z_dataF <- general.tab %>% 
+  filter(track.period > 2) %>% 
+  mutate(expl01 = as.integer(ifelse(n.box2 == 0, 0, 1))) %>% 
+  dplyr::select(Data_Directory, FemaleRing, Season, track.period,
+                n.box2, avg.rev.night, avg.time, med.time, expl01,
+                AgeBin, 
+                ColourF.new, Spots.nF.new, spots.diamF,
+                BodyCondition_resid_female,
+                DailyMassVariation_female) %>% 
+  mutate_at(c(
+    'AgeBin',
+    'ColourF.new',
+    'Spots.nF.new',
+    'spots.diamF',
+    'BodyCondition_resid_female',
+    'DailyMassVariation_female'
+  ),
+  list(z = ~scale(.))) %>% 
+  mutate(Season = as.factor(Season),
+         AgeBin = as.factor(AgeBin)
+  ) %>% 
+  na.omit() %>%
+  as.data.frame() 
+
+## subset for brood-related averaged models ####
+
+z_data.fit <- ind.table.analysis1st1 %>%  
+  filter(track.period > 2) %>% 
+  mutate(expl01 = as.integer(ifelse(n.box2 == 0, 0, 1)),
+         deployment.period = Date_recapture_julian - Date_attached_julian,
+         deployment.period = ifelse(deployment.period < track.period | deployment.period < 0, NA, deployment.period)) %>% 
+  dplyr::select(Data_Directory, FemaleRing, Season, track.period, 
+                Date_recapture_julian, Date_attached_julian, deployment.period,
+                n.box2, avg.rev.night, avg.time, med.time, expl01,
+                Nb_Eggs.y, Nb_Nestlings1.y, 
+                Nb_Nestlings2.y, Nb_Fledglings.y, 
+                delta.wing12, delta.wing13,
+                LeftWing1, LeftWing2,
+                LayingDate1_jul) %>% 
+  mutate(fitness1R = (Nb_Fledglings.y/Nb_Eggs.y),
+         Hatch.Fledg.fitnessR = (Nb_Nestlings1.y/Nb_Eggs.y),
+         deltaNestlings = Nb_Nestlings1.y-Nb_Nestlings2.y,
+         wing.rate12 = delta.wing12/deployment.period) %>% 
+  mutate_at(c(
+    'Nb_Eggs.y',
+    'Nb_Nestlings1.y',
+    'Nb_Nestlings2.y',
+    'Nb_Fledglings.y',
+    'deltaNestlings',
+    'delta.wing12',
+    'delta.wing13',
+    'wing.rate12',
+    'LeftWing1', 
+    'LeftWing2',
+    'fitness1R',
+    'Hatch.Fledg.fitnessR',
+    'LayingDate1_jul'
+  ),
+  list(z = ~scale(.))) %>% 
+  mutate(Season = as.factor(Season)) %>% 
+  na.omit() %>%  
+  filter(wing.rate12_z < 4) %>% # eliminate an outlier
+  as.data.frame() 
+
+#____________________________________________####
+# First SET OF AVG. MODELS (prospecting and non-prospecting females included) ####
+
+# MALE MODELS ####
+
+## correlation and VIF (check) ####
+
+z_dataM1corr <- z_dataM1 %>% 
+  dplyr::select(n.box2, avg.rev.night, med.time, 
+                prop.hunting_z,
+                ColourM1.new_z,
+                Spots.nM1.new_z, 
+                logHR95_Sizekm2_male_z,
+                HR95_Sizekm2_male_z,
+                Provisioning_rate_male_z,
+                BodyCondition_resid_male_z)
+
+corrM1 <- round(cor(z_dataM1corr), 1)
+p.matM1 <- cor_pmat(corrM1)
+ggcorrplot(corrM1, hc.order = TRUE, type = "lower", outline.col = "black", lab = TRUE, p.mat = p.matM1, insig = "blank")
+
+vif1 <- glm(avg.rev.night ~ 
+              AgeBin_male + 
+              ColourM1.new_z +
+              Spots.nM1.new_z + 
+              prop.hunting_z +
+              logHR95_Sizekm2_male_z + 
+              Provisioning_rate_male_z + 
+              BodyCondition_resid_male_z,
+            data = z_dataM1)
+vif(vif1)
+
+## PROSPECTING[0,1] ~ male-related variables####
+
+### Global model ####
+
+glmmM1exp01 <- glmmTMB(expl01 ~ 
+                         AgeBin_male + 
+                         Spots.nM1.new_z + 
+                         ColourM1.new_z +
+                         prop.perching_z +
+                         logHR95_Sizekm2_male_z + 
+                         Provisioning_rate_male_z + 
+                         BodyCondition_resid_male_z,
+                         # (1|Season), # zero variance
+                       family = binomial(link = 'logit'),
+                       data = z_dataM1)
+summary(glmmM1exp01)
+
+### R2 and performance of the model ####
+
+performance(glmmM1exp01)
+r2_nakagawa(glmmM1exp01)
+
+### Model diagnostics ####
+
+simulationOutput <- simulateResiduals(fittedModel = glmmM1exp01, n = 10000, plot = T)
+
+### Model averaging ####
+
+selection.dred1 <- dredge(glmmM1exp01, evaluate = TRUE, rank = "AICc")
+
+confset.95p <- get.models(selection.dred1, cumsum(weight) <= .95)
+
+avgmodM1.exp01 <- model.avg(confset.95p, 
+                          fit = T, 
+                          subset = T,
+                          revised.var = T)
+
+summary(avgmodM1.exp01)$coefmat.subset # std coefficients
+confint(avgmodM1.exp01) # CI 
+avgmodM1.exp01$sw # sum of weights
+
+## MEAN REVISITS PER NIGHT ~ male-related variables####
+### Global model ####
+
+plot(check_distribution(z_dataM1$avg.rev.night))
+
+glmmM1.rev <- glmmTMB(avg.rev.night ~ 
+                        AgeBin_male + 
+                        Spots.nM1.new_z + 
+                        ColourM1.new_z +
+                        prop.perching_z +
+                        logHR95_Sizekm2_male_z + 
+                        Provisioning_rate_male_z + 
+                        BodyCondition_resid_male_z,
+                      # (1|Season), # zero variance
+                      family = tweedie(),
+                      data = z_dataM1)
+summary(glmmM1.rev)
+
+### R2 and performance of the model ####
+
+performance(glmmM1.rev)
+r2_nakagawa(glmmM1.rev)
+
+### Model diagnostics ####
+
+simulationOutput <- simulateResiduals(fittedModel = glmmM1.rev, n = 10000, plot = T)
+
+### Model averaging ####
+
+selection.dred1 <- dredge(glmmM1.rev, evaluate = TRUE, rank = "AICc")
+
+confset.95p <- get.models(selection.dred1, cumsum(weight) <= .95)
+
+avgmodM1.rev <- model.avg(confset.95p, 
+                          fit = T, 
+                          subset = T,
+                          revised.var = T)
+
+summary(avgmodM1.rev)$coefmat.subset # std coefficients
+confint(avgmodM1.rev) # CI 
+avgmodM1.rev$sw # sum of weights
+
+## NUMBER OF NEST BOXES VISITED ~ male-related variables####
+### Global model ####
+
+plot(check_distribution(z_dataM1$n.box2))
+
+glmmM1.box <- glmmTMB(n.box2 ~ 
+                        AgeBin_male +
+                        Spots.nM1.new_z + 
+                        ColourM1.new_z +
+                        prop.perching_z +
+                        logHR95_Sizekm2_male_z + 
+                        Provisioning_rate_male_z + 
+                        BodyCondition_resid_male_z +
+                        (1|Season), 
+                      family = nbinom2(),
+                      data = z_dataM1)
+summary(glmmM1.box)
+
+### R2 and performance of the model ####
+
+performance(glmmM1.box)
+r2_nakagawa(glmmM1.box)
+
+### Model diagnostics ####
+
+simulationOutput <- simulateResiduals(fittedModel = glmmM1.box, n = 10000, plot = T)
+
+### Model averaging ####
+
+selection.dred1 <- dredge(glmmM1.box, evaluate = TRUE, rank = "AICc")
+
+confset.95p <- get.models(selection.dred1, cumsum(weight) <= .95)
+
+avgmodM1.box <- model.avg(confset.95p, 
+                          fit = T, 
+                          subset = T,
+                          revised.var = T)
+
+summary(avgmodM1.box)$coefmat.subset # std coefficients
+confint(avgmodM1.box) # CI 
+avgmodM1.box$sw # sum of weights
+
+
+## MEDIAN TIME SPENT AT NEST BOXES ~ male-related variables####
+### Global model ####
+
+plot(check_distribution(z_dataM1$med.time))
+
+glmmM1.time <- glmmTMB(med.time ~ 
+                         AgeBin_male + 
+                         Spots.nM1.new_z + 
+                         ColourM1.new_z +
+                         prop.perching_z +
+                         logHR95_Sizekm2_male_z + 
+                         Provisioning_rate_male_z + 
+                         BodyCondition_resid_male_z +
+                         (1|Season),
+                       family = tweedie(),
+                       data = z_dataM1)
+summary(glmmM1.time)
+
+### R2 and performance of the model ####
+
+performance(glmmM1.time)
+r2_nakagawa(glmmM1.time)
+
+### Model diagnostics ####
+
+simulationOutput <- simulateResiduals(fittedModel = glmmM1.time, n = 10000, plot = T)
+
+### Model averaging ####
+
+selection.dred1 <- dredge(glmmM1.time, evaluate = TRUE, rank = "AICc")
+
+confset.95p <- get.models(selection.dred1, cumsum(weight) <= .95)
+
+avgmodM1.time <- model.avg(confset.95p, 
+                          fit = T, 
+                          subset = T,
+                          revised.var = T)
+
+summary(avgmodM1.time)$coefmat.subset # std coefficients
+confint(avgmodM1.time) # CI 
+avgmodM1.time$sw # sum of weights
+
+# FEMALE MODELS ####
+
+## correlation and VIF (check) ####
+
+z_dataFcorr <- z_dataF %>% 
+  dplyr::select(n.box2, avg.rev.night, avg.time,
+                ColourF.new_z, Spots.nF.new_z, 
+                spots.diamF_z,
+                BodyCondition_resid_female_z,
+                DailyMassVariation_female_z)
+
+corrF <- round(cor(z_dataFcorr), 1)
+p.matF <- cor_pmat(corrF)
+ggcorrplot(corrF, hc.order = TRUE, type = "lower", outline.col = "black", lab = TRUE, p.mat = p.matF, sig.level = 0.05, insig = "blank")
+
+
+vifF <- glm(avg.rev.night ~ AgeBin + ColourF.new_z + Spots.nF.new_z + spots.diamF_z + BodyCondition_resid_female_z + 
+              DailyMassVariation_female_z,
+            data = z_dataF)
+vif(vifF)
+
+## PROSPECTING[0,1] ~ female-related variables####
+
+### Global model ####
+
+glmmFexp01 <- glmmTMB(expl01 ~ 
+                        AgeBin + 
+                        ColourF.new_z + 
+                        Spots.nF.new_z +
+                        BodyCondition_resid_female_z +
+                        DailyMassVariation_female_z,
+                      # (1|Season), # zero variance
+                      family = binomial(link = 'logit'),
+                      data = z_dataF)
+
+summary(glmmFexp01)
+
+### R2 and performance of the model ####
+
+performance(glmmFexp01)
+r2_nakagawa(glmmFexp01)
+
+### Model diagnostics ####
+
+simulationOutput <- simulateResiduals(fittedModel = glmmFexp01, n = 10000, plot = T)
+
+### Model averaging ####
+
+selection.dred1 <- dredge(glmmFexp01, evaluate = TRUE, rank = "AICc")
+
+confset.95p <- get.models(selection.dred1, cumsum(weight) <= .95)
+
+avgmodF.exp01 <- model.avg(confset.95p, 
+                            fit = T, 
+                            subset = T,
+                            revised.var = T)
+
+summary(avgmodF.exp01)$coefmat.subset # std coefficients
+confint(avgmodF.exp01) # CI 
+avgmodF.exp01$sw # sum of weights
+
+## MEAN REVISITS PER NIGHT ~ female-related variables####
+### Global model ####
+
+plot(check_distribution(z_dataF$avg.rev.night))
+
+glmmF.rev <- glmmTMB(avg.rev.night ~ 
+                       AgeBin + 
+                       ColourF.new_z + 
+                       Spots.nF.new_z +
+                       BodyCondition_resid_female_z +
+                       DailyMassVariation_female_z +
+                       (1|Season), # 0.01 variance
+                     family = tweedie(),
+                     data = z_dataF)
+
+summary(glmmF.rev)
+
+### R2 and performance of the model ####
+
+performance(glmmF.rev)
+r2_nakagawa(glmmF.rev)
+
+### Model diagnostics ####
+
+simulationOutput <- simulateResiduals(fittedModel = glmmF.rev, n = 10000, plot = T)
+
+### Model averaging ####
+
+selection.dred1 <- dredge(glmmF.rev, evaluate = TRUE, rank = "AICc")
+
+confset.95p <- get.models(selection.dred1, cumsum(weight) <= .95)
+
+avgmodF.rev <- model.avg(confset.95p, 
+                          fit = T, 
+                          subset = T,
+                          revised.var = T)
+
+summary(avgmodF.rev)$coefmat.subset # std coefficients
+confint(avgmodF.rev) # CI 
+avgmodF.rev$sw # sum of weights
+
+## NUMBER OF NEST BOXES VISITED ~ female-related variables####
+### Global model ####
+
+plot(check_distribution(z_dataF$n.box2))
+
+glmmF.box <- glmmTMB(n.box2 ~ 
+                       AgeBin + 
+                       ColourF.new_z + 
+                       Spots.nF.new_z +
+                       BodyCondition_resid_female_z +
+                       DailyMassVariation_female_z +
+                       (1|Season),
+                     family = nbinom2(),
+                     data = z_dataF)
+
+summary(glmmF.box)
+
+### R2 and performance of the model ####
+
+performance(glmmF.box)
+r2_nakagawa(glmmF.box)
+
+### Model diagnostics ####
+
+simulationOutput <- simulateResiduals(fittedModel = glmmF.box, n = 10000, plot = T)
+
+### Model averaging ####
+
+selection.dred1 <- dredge(glmmF.box, evaluate = TRUE, rank = "AICc")
+
+confset.95p <- get.models(selection.dred1, cumsum(weight) <= .95)
+
+avgmodF.box <- model.avg(confset.95p, 
+                          fit = T, 
+                          subset = T,
+                          revised.var = T)
+
+summary(avgmodF.box)$coefmat.subset # std coefficients
+confint(avgmodF.box) # CI 
+avgmodF.box$sw # sum of weights
+
+
+## MEDIAN TIME SPENT AT NEST BOXES ~ female-related variables####
+### Global model ####
+
+plot(check_distribution(z_dataF$med.time))
+
+glmmF.time <- glmmTMB(med.time ~ 
+                        AgeBin + 
+                        ColourF.new_z + 
+                        Spots.nF.new_z +
+                        BodyCondition_resid_female_z +
+                        DailyMassVariation_female_z +
+                        (1|Season),
+                      family = tweedie(),
+                      data = z_dataF)
+
+summary(glmmF.time)
+
+### R2 and performance of the model ####
+
+performance(glmmF.time)
+r2_nakagawa(glmmF.time)
+
+### Model diagnostics ####
+
+simulationOutput <- simulateResiduals(fittedModel = glmmF.time, n = 10000, plot = T)
+
+### Model averaging ####
+
+selection.dred1 <- dredge(glmmF.time, evaluate = TRUE, rank = "AICc")
+
+confset.95p <- get.models(selection.dred1, cumsum(weight) <= .95)
+
+avgmodF.time <- model.avg(confset.95p, 
+                           fit = T, 
+                           subset = T,
+                           revised.var = T)
+
+summary(avgmodF.time)$coefmat.subset # std coefficients
+confint(avgmodF.time) # CI 
+avgmodF.time$sw # sum of weights
+
+
+# BROOD MODELS ####
+
+
+## correlation and VIF (check) ####
+
+z_data.fit.corr <- z_data.fit %>% 
+  dplyr::select(
+    n.box2, avg.rev.night, avg.time, 
+    Nb_Eggs.y_z,
+    Nb_Nestlings1.y_z,
+    Nb_Nestlings2.y_z,
+    Nb_Fledglings.y_z,
+    fitness1R_z,
+    Hatch.Fledg.fitnessR_z,
+    deltaNestlings_z,
+    wing.rate12_z,
+    delta.wing12_z,
+    delta.wing13_z,
+    LayingDate1_jul_z
+  )
+
+corr.fit <- round(cor(z_data.fit.corr), 1)
+p.mat.fit <- cor_pmat(corr.fit)
+ggcorrplot(corr.fit, hc.order = TRUE, type = "lower", outline.col = "black", lab = TRUE, p.mat = p.mat.fit, insig = "blank")
+
+
+vif1 <- glm(avg.rev.night ~ deltaNestlings_z + Nb_Nestlings1.y_z + LayingDate1_jul_z +
+              # delta.wing12_z + delta.wing13_z + delta.mass12_z + delta.mass13_z +
+              # Hatch.Fledg.fitnessR_z + 
+              # LeftWing1_z + LeftWing2_z +
+              wing.rate12_z,
+            data = z_data.fit)
+vif(vif1)
+
+## PROSPECTING[0,1] ~ brood-related variables####
+
+### Global model ####
+
+glmm.fit1exp01 <- glmmTMB(expl01 ~ 
+                            deltaNestlings_z + 
+                            Nb_Nestlings1.y_z + 
+                            LayingDate1_jul_z + 
+                            wing.rate12_z,
+                          family = binomial(link = 'logit'),
+                          data = z_data.fit)
+summary(glmm.fit1exp01)
+
+### R2 and performance of the model ####
+
+performance(glmm.fit1exp01)
+r2_nakagawa(glmm.fit1exp01)
+
+### Model diagnostics ####
+
+simulationOutput <- simulateResiduals(fittedModel = glmm.fit1exp01, n = 10000, plot = T)
+
+### Model averaging ####
+
+selection.dred1 <- dredge(glmm.fit1exp01, evaluate = TRUE, rank = "AICc")
+
+confset.95p <- get.models(selection.dred1, cumsum(weight) <= .95)
+
+avgmodfit.exp01 <- model.avg(confset.95p, 
+                           fit = T, 
+                           subset = T,
+                           revised.var = T)
+
+summary(avgmodfit.exp01)$coefmat.subset # std coefficients
+confint(avgmodfit.exp01) # CI 
+avgmodfit.exp01$sw # sum of weights
+
+## MEAN REVISITS PER NIGHT ~ brood-related variables####
+### Global model ####
+
+plot(check_distribution(z_data.fit$avg.rev.night))
+
+glmm.fit1.rev <- glmmTMB(avg.rev.night ~ 
+                           deltaNestlings_z + 
+                           Nb_Nestlings1.y_z + 
+                           LayingDate1_jul_z + 
+                           wing.rate12_z,
+                           # (1|Season), # zero variance
+                         family = tweedie(),
+                         data = z_data.fit)
+
+summary(glmm.fit1.rev)
+
+### R2 and performance of the model ####
+
+performance(glmm.fit1.rev)
+r2_nakagawa(glmm.fit1.rev)
+
+### Model diagnostics ####
+
+simulationOutput <- simulateResiduals(fittedModel = glmm.fit1.rev, n = 10000, plot = T)
+
+### Model averaging ####
+
+selection.dred1 <- dredge(glmm.fit1.rev, evaluate = TRUE, rank = "AICc")
+
+confset.95p <- get.models(selection.dred1, cumsum(weight) <= .95)
+
+avgmodfit.rev <- model.avg(confset.95p, 
+                         fit = T, 
+                         subset = T,
+                         revised.var = T)
+
+summary(avgmodfit.rev)$coefmat.subset # std coefficients
+confint(avgmodfit.rev) # CI 
+avgmodfit.rev$sw # sum of weights
+
+## NUMBER OF NEST BOXES VISITED ~ brood-related variables####
+### Global model ####
+
+plot(check_distribution(z_data.fit$n.box2))
+
+glmm.fit1.box <- glmmTMB(n.box2 ~ 
+                           deltaNestlings_z + 
+                           Nb_Nestlings1.y_z + 
+                           LayingDate1_jul_z + 
+                           wing.rate12_z +
+                           (1|Season),
+                         family = nbinom2(),
+                         data = z_data.fit)
+summary(glmm.fit1.box)
+
+### R2 and performance of the model ####
+
+performance(glmm.fit1.box)
+r2_nakagawa(glmm.fit1.box)
+
+### Model diagnostics ####
+
+simulationOutput <- simulateResiduals(fittedModel = glmm.fit1.box, n = 10000, plot = T)
+
+### Model averaging ####
+
+selection.dred1 <- dredge(glmm.fit1.box, evaluate = TRUE, rank = "AICc")
+
+confset.95p <- get.models(selection.dred1, cumsum(weight) <= .95)
+
+avgmodfit.box <- model.avg(confset.95p, 
+                         fit = T, 
+                         subset = T,
+                         revised.var = T)
+
+summary(avgmodfit.box)$coefmat.subset # std coefficients
+confint(avgmodfit.box) # CI 
+avgmodfit.box$sw # sum of weights
+
+
+## MEDIAN TIME SPENT AT NEST BOXES ~ brood-related variables####
+### Global model ####
+
+plot(check_distribution(z_data.fit$med.time))
+
+glmm.fit1.time <- glmmTMB(med.time ~ 
+                            deltaNestlings_z + 
+                            Nb_Nestlings1.y_z + 
+                            LayingDate1_jul_z + 
+                            wing.rate12_z +
+                            (1|Season),
+                          family = tweedie(),
+                          data = z_data.fit)
+summary(glmm.fit1.time)
+
+### R2 and performance of the model ####
+
+performance(glmm.fit1.time)
+r2_nakagawa(glmm.fit1.time)
+
+### Model diagnostics ####
+
+simulationOutput <- simulateResiduals(fittedModel = glmm.fit1.time, n = 10000, plot = T)
+
+### Model averaging ####
+
+selection.dred1 <- dredge(glmm.fit1.time, evaluate = TRUE, rank = "AICc")
+
+confset.95p <- get.models(selection.dred1, cumsum(weight) <= .95)
+
+avgmodfit.time <- model.avg(confset.95p, 
+                          fit = T, 
+                          subset = T,
+                          revised.var = T)
+
+summary(avgmodfit.time)$coefmat.subset # std coefficients
+confint(avgmodfit.time) # CI 
+avgmodfit.time$sw # sum of weights
+
+#____________________________________________####
+# Second SET OF AVG. MODELS (without non-prospecting females included) ####
+
+## subset to exclude non-prospecting females ####
+
+z_dataM1exp <- z_dataM1 %>% 
+  filter(n.box2 != 0) %>% 
+  mutate(logHR95_Sizekm2_male = log(HR95_Sizekm2_male),
+         logavg.rev.night = log(avg.rev.night),
+         logn.box2 = log(n.box2),
+         logmed.time = log(med.time),
+         Season = as.factor(Season),
+         AgeBin_male = as.factor(AgeBin_male))
+
+z_dataFexp <- z_dataF %>% 
+  filter(n.box2 != 0) %>% 
+  mutate(logavg.rev.night = log(avg.rev.night),
+         logn.box2 = log(n.box2),
+         logmed.time = log(med.time),
+         Season = as.factor(Season),
+         AgeBin = as.factor(AgeBin))
+
+z_data.fitexp <- z_data.fit %>% 
+  filter(n.box2 != 0) %>% 
+  mutate(logavg.rev.night = log(avg.rev.night),
+         logn.box2 = log(n.box2),
+         logmed.time = log(med.time),
+         Season = as.factor(Season))
+
+# MALE MODELS ####
+
+## MEAN REVISITS PER NIGHT ~ male-related variables####
+### Global model ####
+
+plot(check_distribution(z_dataM1exp$avg.rev.night))
+
+glmmM1exp.rev <- glmmTMB(logavg.rev.night ~ 
+                           AgeBin_male + 
+                           Spots.nM1.new_z + 
+                           ColourM1.new_z +
+                           prop.perching_z +
+                           logHR95_Sizekm2_male_z + 
+                           Provisioning_rate_male_z + 
+                           BodyCondition_resid_male_z,
+                           # (1|Season), # zero variance
+                         family = gaussian,
+                         data = z_dataM1exp)
+summary(glmmM1exp.rev)
+
+### R2 and performance of the model ####
+
+performance(glmmM1exp.rev)
+r2_nakagawa(glmmM1exp.rev)
+
+### Model diagnostics ####
+
+simulationOutput <- simulateResiduals(fittedModel = glmmM1exp.rev, n = 10000, plot = T)
+
+### Model averaging ####
+
+selection.dred1 <- dredge(glmmM1exp.rev, evaluate = TRUE, rank = "AICc")
+
+confset.95p <- get.models(selection.dred1, cumsum(weight) <= .95)
+
+avgmodM1exp.rev <- model.avg(confset.95p, 
+                          fit = T, 
+                          subset = T,
+                          revised.var = T)
+
+summary(avgmodM1exp.rev)$coefmat.subset # std coefficients
+confint(avgmodM1exp.rev) # CI 
+avgmodM1exp.rev$sw # sum of weights
+
+## NUMBER OF NEST BOXES VISITED ~ male-related variables####
+### Global model ####
+
+plot(check_distribution(z_dataM1exp$n.box2))
+
+glmmM1exp.box <- glmmTMB(logn.box2 ~ 
+                           AgeBin_male + 
+                           Spots.nM1.new_z + 
+                           ColourM1.new_z +
+                           prop.perching_z +
+                           logHR95_Sizekm2_male_z + 
+                           Provisioning_rate_male_z + 
+                           BodyCondition_resid_male_z +
+                           (1|Season),
+                         family = gaussian,
+                         data = z_dataM1exp)
+summary(glmmM1exp.box)
+
+### R2 and performance of the model ####
+
+performance(glmmM1exp.box)
+r2_nakagawa(glmmM1exp.box)
+
+### Model diagnostics ####
+
+simulationOutput <- simulateResiduals(fittedModel = glmmM1exp.box, n = 10000, plot = T)
+
+### Model averaging ####
+
+selection.dred1 <- dredge(glmmM1exp.box, evaluate = TRUE, rank = "AICc")
+
+confset.95p <- get.models(selection.dred1, cumsum(weight) <= .95)
+
+avgmodM1exp.box <- model.avg(confset.95p, 
+                          fit = T, 
+                          subset = T,
+                          revised.var = T)
+
+summary(avgmodM1exp.box)$coefmat.subset # std coefficients
+confint(avgmodM1exp.box) # CI 
+avgmodM1exp.box$sw # sum of weights
+
+
+## MEDIAN TIME SPENT AT NEST BOXES ~ male-related variables####
+### Global model ####
+
+plot(check_distribution(z_dataM1exp$med.time))
+plot(check_distribution(log(z_dataM1exp$med.time)))
+
+glmmM1exp.time <- glmmTMB(logmed.time ~ 
+                            AgeBin_male + 
+                            Spots.nM1.new_z + 
+                            ColourM1.new_z +
+                            prop.perching_z +
+                            logHR95_Sizekm2_male_z + 
+                            Provisioning_rate_male_z + 
+                            BodyCondition_resid_male_z +
+                            (1|Season),
+                          family = gaussian,
+                          data = z_dataM1exp)
+summary(glmmM1exp.time)
+
+### R2 and performance of the model ####
+
+performance(glmmM1exp.time)
+r2_nakagawa(glmmM1exp.time)
+
+### Model diagnostics ####
+
+simulationOutput <- simulateResiduals(fittedModel = glmmM1exp.time, n = 10000, plot = T)
+
+### Model averaging ####
+
+selection.dred1 <- dredge(glmmM1exp.time, evaluate = TRUE, rank = "AICc")
+
+confset.95p <- get.models(selection.dred1, cumsum(weight) <= .95)
+
+avgmodM1exp.time <- model.avg(confset.95p, 
+                           fit = T, 
+                           subset = T,
+                           revised.var = T)
+
+summary(avgmodM1exp.time)$coefmat.subset # std coefficients
+confint(avgmodM1exp.time) # CI 
+avgmodM1exp.time$sw # sum of weights
+
+
+# FEMALE MODELS ####
+
+## MEAN REVISITS PER NIGHT ~ female-related variables####
+### Global model ####
+
+plot(check_distribution(z_dataFexp$logavg.rev.night))
+
+glmmFexp.rev <- glmmTMB(logavg.rev.night ~ 
+                          AgeBin + 
+                          ColourF.new_z + 
+                          Spots.nF.new_z +
+                          BodyCondition_resid_female_z +
+                          DailyMassVariation_female_z +
+                          (1|Season),
+                        family = gaussian,
+                        data = z_dataFexp)
+
+summary(glmmFexp.rev)
+
+### R2 and performance of the model ####
+
+performance(glmmFexp.rev)
+r2_nakagawa(glmmFexp.rev)
+
+### Model diagnostics ####
+
+simulationOutput <- simulateResiduals(fittedModel = glmmFexp.rev, n = 10000, plot = T)
+
+### Model averaging ####
+
+selection.dred1 <- dredge(glmmFexp.rev, evaluate = TRUE, rank = "AICc")
+
+confset.95p <- get.models(selection.dred1, cumsum(weight) <= .95)
+
+avgmodFexp.rev <- model.avg(confset.95p, 
+                         fit = T, 
+                         subset = T,
+                         revised.var = T)
+
+summary(avgmodFexp.rev)$coefmat.subset # std coefficients
+confint(avgmodFexp.rev) # CI 
+avgmodFexp.rev$sw # sum of weights
+
+## NUMBER OF NEST BOXES VISITED ~ female-related variables####
+### Global model ####
+
+plot(check_distribution(z_dataFexp$logn.box2))
+
+glmmFexp.box <- glmmTMB(logn.box2 ~ 
+                          AgeBin + 
+                          ColourF.new_z + 
+                          Spots.nF.new_z +
+                          BodyCondition_resid_female_z +
+                          DailyMassVariation_female_z +
+                          (1|Season),
+                        family = gaussian,
+                        data = z_dataFexp)
+
+summary(glmmFexp.box)
+
+
+### R2 and performance of the model ####
+
+performance(glmmFexp.box)
+r2_nakagawa(glmmFexp.box)
+
+### Model diagnostics ####
+
+simulationOutput <- simulateResiduals(fittedModel = glmmFexp.box, n = 10000, plot = T)
+
+### Model averaging ####
+
+selection.dred1 <- dredge(glmmFexp.box, evaluate = TRUE, rank = "AICc")
+
+confset.95p <- get.models(selection.dred1, cumsum(weight) <= .95)
+
+avgmodFexp.box <- model.avg(confset.95p, 
+                         fit = T, 
+                         subset = T,
+                         revised.var = T)
+
+summary(avgmodFexp.box)$coefmat.subset # std coefficients
+confint(avgmodFexp.box) # CI 
+avgmodFexp.box$sw # sum of weights
+
+
+## MEDIAN TIME SPENT AT NEST BOXES ~ female-related variables####
+### Global model ####
+
+plot(check_distribution(z_dataFexp$logmed.time))
+
+glmmFexp.time <- glmmTMB(logmed.time ~ 
+                           AgeBin + 
+                           ColourF.new_z + 
+                           Spots.nF.new_z +
+                           BodyCondition_resid_female_z +
+                           DailyMassVariation_female_z +
+                           (1|Season),
+                         family = gaussian,
+                         data = z_dataFexp)
+
+summary(glmmFexp.time)
+
+### R2 and performance of the model ####
+
+performance(glmmFexp.time)
+r2_nakagawa(glmmFexp.time)
+
+### Model diagnostics ####
+
+simulationOutput <- simulateResiduals(fittedModel = glmmFexp.time, n = 10000, plot = T)
+
+### Model averaging ####
+
+selection.dred1 <- dredge(glmmFexp.time, evaluate = TRUE, rank = "AICc")
+
+confset.95p <- get.models(selection.dred1, cumsum(weight) <= .95)
+
+avgmodFexp.time <- model.avg(confset.95p, 
+                          fit = T, 
+                          subset = T,
+                          revised.var = T)
+
+summary(avgmodFexp.time)$coefmat.subset # std coefficients
+confint(avgmodFexp.time) # CI 
+avgmodFexp.time$sw # sum of weights
+
+
+# BROOD MODELS ####
+
+## MEAN REVISITS PER NIGHT ~ brood-related variables####
+### Global model ####
+
+plot(check_distribution(z_data.fitexp$logavg.rev.night))
+
+glmm.fit1exp.rev <- glmmTMB(logavg.rev.night ~ 
+                              deltaNestlings_z + 
+                              Nb_Nestlings1.y_z + 
+                              LayingDate1_jul_z + 
+                              wing.rate12_z,
+                            family = gaussian,
+                            data = z_data.fitexp)
+summary(glmm.fit1exp.rev)
+
+### R2 and performance of the model ####
+
+performance(glmm.fit1exp.rev)
+r2_nakagawa(glmm.fit1exp.rev)
+
+### Model diagnostics ####
+
+simulationOutput <- simulateResiduals(fittedModel = glmm.fit1exp.rev, n = 10000, plot = T)
+
+### Model averaging ####
+
+selection.dred1 <- dredge(glmm.fit1exp.rev, evaluate = TRUE, rank = "AICc")
+
+confset.95p <- get.models(selection.dred1, cumsum(weight) <= .95)
+
+avgmodfitexp.rev <- model.avg(confset.95p, 
+                           fit = T, 
+                           subset = T,
+                           revised.var = T)
+
+summary(avgmodfitexp.rev)$coefmat.subset # std coefficients
+confint(avgmodfitexp.rev) # CI 
+avgmodfitexp.rev$sw # sum of weights
+
+## NUMBER OF NEST BOXES VISITED ~ brood-related variables####
+### Global model ####
+
+plot(check_distribution(log(z_data.fitexp$n.box2)))
+
+glmm.fit1exp.box <- glmmTMB(logn.box2 ~ 
+                              deltaNestlings_z + 
+                              Nb_Nestlings1.y_z + 
+                              LayingDate1_jul_z + 
+                              wing.rate12_z +
+                              (1|Season),
+                            family = gaussian,
+                            data = z_data.fitexp)
+summary(glmm.fit1exp.box)
+
+### R2 and performance of the model ####
+
+performance(glmm.fit1exp.box)
+r2_nakagawa(glmm.fit1exp.box)
+
+### Model diagnostics ####
+
+simulationOutput <- simulateResiduals(fittedModel = glmm.fit1exp.box, n = 10000, plot = T)
+
+### Model averaging ####
+
+selection.dred1 <- dredge(glmm.fit1exp.box, evaluate = TRUE, rank = "AICc")
+
+confset.95p <- get.models(selection.dred1, cumsum(weight) <= .95)
+
+avgmodfitexp.box <- model.avg(confset.95p, 
+                           fit = T, 
+                           subset = T,
+                           revised.var = T)
+
+summary(avgmodfitexp.box)$coefmat.subset # std coefficients
+confint(avgmodfitexp.box) # CI 
+avgmodfitexp.box$sw # sum of weights
+
+
+## MEDIAN TIME SPENT AT NEST BOXES ~ brood-related variables####
+### Global model ####
+
+plot(check_distribution(z_data.fitexp$logmed.time))
+
+glmm.fit1exp.time <- glmmTMB(logmed.time ~ 
+                               deltaNestlings_z + 
+                               Nb_Nestlings1.y_z + 
+                               LayingDate1_jul_z + 
+                               wing.rate12_z,
+                             family = gaussian,
+                             data = z_data.fitexp)
+summary(glmm.fit1exp.time)
+
+### R2 and performance of the model ####
+
+performance(glmm.fit1exp.time)
+r2_nakagawa(glmm.fit1exp.time)
+
+### Model diagnostics ####
+
+simulationOutput <- simulateResiduals(fittedModel = glmm.fit1exp.time, n = 10000, plot = T)
+
+### Model averaging ####
+
+selection.dred1 <- dredge(glmm.fit1exp.time, evaluate = TRUE, rank = "AICc")
+
+confset.95p <- get.models(selection.dred1, cumsum(weight) <= .95)
+
+avgmodfitexp.time <- model.avg(confset.95p, 
+                            fit = T, 
+                            subset = T,
+                            revised.var = T)
+
+summary(avgmodfitexp.time)$coefmat.subset # std coefficients
+confint(avgmodfitexp.time) # CI 
+avgmodfitexp.time$sw # sum of weights
+
+#_____________________________________________####
+#_____________________________________________####
+
+# Drivers of multiple visits to a nest box ####
+#____________________________________________####
+
+# load file ####
+
+nest.data <- fread(paste0(mypath,"BecciuEtAl2023_table_for_analysis_multiple_visits_to_nestboxes.csv"))
+
+## model ####
+glm_bin_rev_box <- glmmTMB(count.rev.bin ~ 
+                    prop.occupancy_z + 
+                    mean.fledg_z + 
+                    past.clutchF.bin + 
+                    occupied +
+                    log.dist_z +
+                    n.nests_z,
+                  family = binomial,
+                  data = nest.data)
+
+### model summary ####
+tab_model(glm_bin_rev_box,
+          rm.terms = "(Intercept)",
+          digits = 3,
+          digits.p = 3,
+          p.style = "stars",
+          show.r2 = T,
+          terms = NULL)
+
+### model diagnostics ####
+
+simulationOutput <- simulateResiduals(fittedModel = glm_bin_rev_box, n = 10000, plot = T)
+
+
+#_____________________________________________####
+#_____________________________________________####
+
+# Mean revisits predict probability of re-nesting ####
+#____________________________________________####
+
+# subset data ####
+
+clutch_dataF <- ind.table.analysis1st1 %>% 
+  filter(BSM_manip != "yes") %>%
+  filter(track.period > 2) %>% 
+  dplyr::select(Data_Directory, FemaleRing, Season, track.period,
+                avg.rev.night, n.box2, med.time,
+                clutchesF
+                
+  ) %>% 
+  mutate(
+    clutchesF.01 = ifelse(clutchesF == 1, 0, 1),
+    expl.01 = as.factor(ifelse(n.box2 > 0, 1, 0))
+  ) %>% 
+  mutate_at(c('avg.rev.night',
+              'n.box2',
+              'med.time'
+  ),
+  list(z = ~scale(.))) %>% 
+  mutate(
+    Season = as.factor(Season)
+    # AgeBin = as.factor(AgeBin)
+  ) %>% 
+  na.omit() %>%
+  as.data.frame()
+
+
+## check correlation and VIF ####
+
+clutch_dataFcorr <- clutch_dataF %>% 
+  dplyr::select(
+    avg.rev.night_z,
+    n.box2_z,
+    med.time_z)
+
+clutch_corrF <- round(cor(clutch_dataFcorr), 1)
+p.matF <- cor_pmat(clutch_corrF)
+ggcorrplot(clutch_corrF, hc.order = TRUE, type = "lower", outline.col = "black", lab = TRUE, p.mat = p.matF)
+
+
+vif1 <- glm(clutchesF.01 ~ avg.rev.night_z + med.time_z  + n.box2_z,
+            family = binomial,
+            data = clutch_dataF)
+vif(vif1)
+
+## Univariate models ####
+
+glmmCF_F1 <- glmmTMB(clutchesF.01 ~ expl.01,
+                     family = binomial(link = 'logit'),
+                     data = clutch_dataF)
+summary(glmmCF_F1)
+
+glmmCF_F2 <- glmmTMB(clutchesF.01 ~ scale(avg.rev.night),
+                     family = binomial(link = 'logit'),
+                     data = clutch_dataF)
+summary(glmmCF_F2)
+
+
+glmmCF_F3 <- glmmTMB(clutchesF.01 ~ scale(n.box2),
+                     family = binomial(link = 'logit'),
+                     data = clutch_dataF)
+summary(glmmCF_F3)
+
+
+glmmCF_F4 <- glmmTMB(clutchesF.01 ~ scale(med.time),
+                     family = binomial(link = 'logit'),
+                     data = clutch_dataF)
+summary(glmmCF_F4)
+
+## compare models ####
+compare_performance(glmmCF_F1, glmmCF_F2, glmmCF_F3, glmmCF_F4, metrics = "all", rank = T)
+
+## Model tables ####
+
+univ_models <- list(glmmCF_F1, glmmCF_F2, glmmCF_F3, glmmCF_F4)
+
+tab_model(univ_models,
+          rm.terms = "(Intercept)",
+          digits = 3,
+          digits.p = 3,
+          p.style = "stars",
+          show.r2 = T,
+          terms = NULL)
+
+## Model diagnostics #### 
+
+simulationOutput <- simulateResiduals(fittedModel = glmmCF_F2, n = 10000, plot = T)
+simulationOutput <- simulateResiduals(fittedModel = glmmCF_F3, n = 10000, plot = T)
+
+
+# subset data for model including more factors predicting re-nesting ####
+
+clutch_dataF.fin <- ind.table.analysis1st1 %>% 
+  filter(BSM_manip != "yes") %>%
+  filter(track.period > 2) %>% 
+  dplyr::select(Data_Directory, FemaleRing, Season, track.period,
+                avg.rev.night, n.box2, med.time,
+                clutchesF,
+                AgeBin,
+                LayingDate1_jul,
+                Nb_Nestlings1.y, 
+                Nb_Fledglings.y, 
+                HR95_Sizekm2_male
+                
+  ) %>% 
+  mutate(
+    clutchesF.01 = ifelse(clutchesF == 1, 0, 1),
+    expl.01 = ifelse(n.box2 > 0, 1, 0),
+    FledgNestratio = Nb_Fledglings.y/Nb_Nestlings1.y,
+    logHR95_Sizekm2_male = log(HR95_Sizekm2_male)
+  ) %>% 
+  mutate_at(c('avg.rev.night',
+              'n.box2',
+              'med.time',
+              'AgeBin',
+              'LayingDate1_jul',
+              'Nb_Nestlings1.y', 
+              'logHR95_Sizekm2_male',
+              'FledgNestratio'
+  ),
+  list(z = ~scale(.))) %>% 
+  mutate(
+    Season = as.factor(Season),
+    AgeBin = as.factor(AgeBin)
+  ) %>% 
+  na.omit() %>%
+  as.data.frame()
+
+## Global model ####
+
+# with Laying Date
+glmmCF_fin <- glmmTMB(clutchesF.01 ~ 
+                        avg.rev.night_z +
+                        AgeBin + 
+                        logHR95_Sizekm2_male_z +
+                        LayingDate1_jul_z +
+                        Nb_Nestlings1.y_z +
+                        FledgNestratio_z,
+                      family = binomial(link = 'logit'),
+                      data = clutch_dataF.fin)
+summary(glmmCF_fin)
+
+performance(glmmCF_fin)
+
+# without Laying Date
+
+glmmCF_fin1 <- glmmTMB(clutchesF.01 ~ 
+                         avg.rev.night_z +
+                         AgeBin + 
+                         logHR95_Sizekm2_male_z +
+                         Nb_Nestlings1.y_z +
+                         FledgNestratio_z,
+                       family = binomial(link = 'logit'),
+                       data = clutch_dataF.fin)
+summary(glmmCF_fin1)
+
+performance(glmmCF_fin1)
+
+## Model diagnostics ####
+simulationOutput <- simulateResiduals(fittedModel = glmmCF_fin, n = 10000, plot = T)
+simulationOutput <- simulateResiduals(fittedModel = glmmCF_fin1, n = 10000, plot = T)
+
+## Model averaging ####
+selection.dred <- dredge(glmmCF_fin, evaluate = TRUE, rank = "AICc")
+selection.dred1 <- dredge(glmmCF_fin1, evaluate = TRUE, rank = "AICc")
+
+confset.95p <- get.models(selection.dred, cumsum(weight) <= .95)
+confset.95p1 <- get.models(selection.dred1, cumsum(weight) <= .95)
+
+# Model average models with delta AICc < 7
+avgmodCF_fin <- model.avg(confset.95p, fit = T, subset = T, revised.var = T)
+avgmodCF_fin1 <- model.avg(confset.95p1, fit = T, subset = T, revised.var = T)
+
+summary(avgmodCF_fin)
+summary(avgmodCF_fin1)
+
+summary(avgmodCF_fin)$coefmat.subset # std coefficients
+confint(avgmodCF_fin) # CI 
+avgmodCF_fin$sw # sum of weights
+
+summary(avgmodCF_fin1)$coefmat.subset # std coefficients
+confint(avgmodCF_fin1) # CI 
+avgmodCF_fin1$sw # sum of weights
+
+#_____________________________________________####
+#_____________________________________________####
+
+# Implications on annual reproductive fitness ####
+#____________________________________________####
+
+
+# load file ####
+
+sums.data <- fread(paste0(mypath,"BecciuEtAl2023_table_for_analysis_sums_eggs_and_fledglings_per_female.csv"))
+
+
+## SUM OF EGGS ####
+### univariate model testing and comparisons ####
+
+Meggs.A <- glmmTMB(sum.eggs ~ 
+                     scale(n.box2) + 
+                     (1|Season),
+                   family = nbinom2(),
+                   data = sums.data)
+
+Meggs.B <- glmmTMB(sum.eggs ~ 
+                     scale(med.time) +  
+                     (1|Season),
+                   family = nbinom2(),
+                   data = sums.data)
+
+Meggs.C <- glmmTMB(sum.eggs ~ 
+                     expl.01 + 
+                     (1|Season),
+                   family = nbinom2(),
+                   data = sums.data)
+
+Meggs.D <- glmmTMB(sum.eggs ~ 
+                     scale(avg.rev.night) + 
+                     (1|Season),
+                   family = nbinom2(),
+                   data = sums.data)
+
+compare_performance(Meggs.A,Meggs.B,Meggs.C,Meggs.D, rank = T, metrics = c("all"))
+
+AICc(Meggs.A)
+AICc(Meggs.B)
+AICc(Meggs.C)
+AICc(Meggs.D)
+
+summary(Meggs.A)
+summary(Meggs.B)
+summary(Meggs.C)
+summary(Meggs.D)
+
+tab_model(Meggs.A)
+tab_model(Meggs.B)
+tab_model(Meggs.C)
+tab_model(Meggs.D)
+
+confint(Meggs.A)
+confint(Meggs.D)
+confint(Meggs.B)
+confint(Meggs.C)
+
+### model diagnostics ####
+simulationOutputA <- simulateResiduals(fittedModel = Meggs.A, n = 10000, plot = T)
+simulationOutputB <- simulateResiduals(fittedModel = Meggs.B, n = 10000, plot = T)
+simulationOutputC <- simulateResiduals(fittedModel = Meggs.C, n = 10000, plot = T)
+simulationOutputD <- simulateResiduals(fittedModel = Meggs.D, n = 10000, plot = T)
+
+### Model tables ####
+
+univ_models <- list(Meggs.A, Meggs.B, Meggs.C, Meggs.D)
+
+tab_model(univ_models,
+          rm.terms = "(Intercept)",
+          digits = 3,
+          digits.p = 3,
+          p.style = "stars",
+          show.r2 = T,
+          terms = NULL)
+
+
+## SUM OF FLEDGLINGS ####
+
+### univariate model testing and comparisons ####
+
+Mfledg.A <- glmmTMB(sum.fledg ~ 
+                      scale(n.box2), 
+                    family = poisson,
+                    data = sums.data)
+
+Mfledg.B <- glmmTMB(sum.fledg ~ 
+                      scale(med.time), 
+                    family = poisson,
+                    data = sums.data)
+
+Mfledg.C <- glmmTMB(sum.fledg ~ 
+                      expl.01, 
+                    family = poisson,
+                    data = sums.data)
+
+Mfledg.D <- glmmTMB(sum.fledg ~ 
+                      scale(avg.rev.night), 
+                    family = poisson,
+                    data = sums.data)
+
+summary(Mfledg.A)
+summary(Mfledg.B)
+summary(Mfledg.C)
+summary(Mfledg.D)
+
+compare_performance(Mfledg.A,Mfledg.B,Mfledg.C,Mfledg.D, rank = T, metrics = "all")
+
+AICc(Mfledg.A)
+AICc(Mfledg.B)
+AICc(Mfledg.C)
+AICc(Mfledg.D)
+
+### model diagnostics ####
+simulationOutputA <- simulateResiduals(fittedModel = Mfledg.A, n = 10000, plot = T)
+simulationOutputB <- simulateResiduals(fittedModel = Mfledg.B, n = 10000, plot = T)
+simulationOutputC <- simulateResiduals(fittedModel = Mfledg.C, n = 10000, plot = T)
+simulationOutputD <- simulateResiduals(fittedModel = Mfledg.D, n = 10000, plot = T)
+
+### Model tables ####
+
+univ_models <- list(Mfledg.A,Mfledg.B,Mfledg.C,Mfledg.D)
+
+tab_model(univ_models,
+          rm.terms = "(Intercept)",
+          digits = 3,
+          digits.p = 3,
+          p.style = "stars",
+          show.r2 = T,
+          terms = NULL)
+
+
+
+
